@@ -1,29 +1,46 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import os
 import requests
-from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-# للسماح لبابل بالاتصال
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # يمكنك تحديد رابط تطبيق Bubble فقط
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+DEESEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+DEESEEK_URL = "https://api.deepseek.com/chat/completions"
 
-DEESEEK_API_KEY = "sk-14807e0a014546759cb630b50e5e3663"
-DEESEEK_URL = "https://api.deepseek.ai/v1/generate"
+if not DEESEEK_API_KEY:
+    raise RuntimeError("Please set the DEEPSEEK_API_KEY environment variable.")
+
+class Question(BaseModel):
+    prompt: str
 
 @app.post("/ask")
-async def ask(request: Request):
-    data = await request.json()
-    prompt = data.get("prompt", "")
-    payload = {
-        "prompt": prompt,
-        "max_tokens": 500
+def ask(question: Question):
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {DEESEEK_API_KEY}"
     }
-    headers = {"Authorization": f"Bearer {DEESEEK_API_KEY}"}
-    response = requests.post(DEESEEK_URL, json=payload, headers=headers)
-    return response.json()
+
+    data = {
+        "model": "deepseek-chat",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": question.prompt}
+        ],
+        "stream": False
+    }
+
+    try:
+        response = requests.post(DEESEEK_URL, headers=headers, json=data, timeout=30)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Error calling DeepSeek API: {e}")
+
+    result = response.json()
+    # DeepSeek عادةً يعيد الرسالة تحت result["choices"][0]["message"]["content"]
+    try:
+        answer = result["choices"][0]["message"]["content"]
+    except (KeyError, IndexError):
+        raise HTTPException(status_code=500, detail="Unexpected response format from DeepSeek API.")
+
+    return {"answer": answer}
